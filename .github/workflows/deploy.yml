@@ -1,0 +1,73 @@
+name: Build & deploy preview
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Manual trigger: rebuild against the latest Gluon main on demand.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Allow one concurrent deployment; don't cancel an in-progress production deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Render against the Gluon commit pinned by this repo's submodule.
+          submodules: true
+      - name: Refresh Gluon to upstream main
+        # Only on a manual run: re-point the submodule at the tip of the
+        # tracked branch (main) to preview current upstream. Push/PR builds
+        # use the pinned submodule commit.
+        if: github.event_name == 'workflow_dispatch'
+        run: git submodule update --remote gluon
+      - name: Set up Lua 5.1
+        uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: "5.1.5"
+      - name: Build preview
+        run: ./build.sh
+      - name: Check for render failures
+        # Intentional placeholders (template()/call() pages) are fine; a real
+        # model render failure (error500 box) means a page needs a backend the
+        # preview doesn't mock yet, and should fail the build.
+        run: |
+          if grep -rl 'class="error500"' out; then
+            echo "::error::A config-mode page failed to render (see error500 above)."
+            exit 1
+          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: config-mode-preview
+          path: out
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    name: deploy
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
